@@ -165,13 +165,19 @@ button {
     padding: 10px;
 }
 
+.export-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
 .export {
-    width: 100%;
+    flex: 1 1 calc(50% - 4px);
     background: #2563eb;
     color: white;
     padding: 12px;
     font-weight: 600;
-    margin-bottom: 10px;
+    margin-bottom: 0;
 }
 
 .export:hover {

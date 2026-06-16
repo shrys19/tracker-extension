@@ -298,133 +298,179 @@ setInterval(async () => {
 }, 30000);
 
 
+// Local-time window boundaries (epoch ms). until is left open (now).
+function rangeSince(label) {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+
+    if (label === "day") {
+        return d.getTime();
+    }
+
+    if (label === "week") {
+        // Monday as the first day of the week.
+        const mondayOffset =
+            (d.getDay() + 6) % 7;
+        d.setDate(
+            d.getDate() - mondayOffset
+        );
+        return d.getTime();
+    }
+
+    if (label === "month") {
+        d.setDate(1);
+        return d.getTime();
+    }
+
+    return null; // "all"
+}
+
+async function runExport(label) {
+    const since = rangeSince(label);
+
+    // Pull the durable export from SQLite via the daemon (per-site
+    // totals + raw sessions, optionally windowed, survives Reset).
+    const resp =
+        await chrome.runtime.sendMessage({
+            type: "getExport",
+            payload: {
+                since,
+                until: null
+            }
+        });
+
+    if (!resp || !resp.ok) {
+        alert(
+            "Export failed: " +
+            ((resp && resp.error) ||
+                "daemon unavailable")
+        );
+
+        return;
+    }
+
+    const sites =
+        (resp.report &&
+            resp.report.sites) ||
+        [];
+
+    const sessions =
+        (resp.report &&
+            resp.report.sessions) ||
+        [];
+
+    const totalTimeMs =
+        sites.reduce(
+            (a, s) => a + s.duration_ms,
+            0
+        );
+
+    const report = {
+        generatedAt:
+            new Date().toISOString(),
+
+        source: "sqlite",
+
+        range: {
+            label,
+            since:
+                since === null
+                    ? null
+                    : new Date(
+                        since
+                    ).toISOString(),
+            until:
+                new Date().toISOString()
+        },
+
+        summary: {
+            totalSites: sites.length,
+
+            totalSessions:
+                sessions.length,
+
+            totalTimeMs,
+
+            totalTimeHours:
+                msToHours(totalTimeMs)
+        },
+
+        sites: sites.map(s => ({
+            site: s.site,
+            timeMs: s.duration_ms,
+            timeHours:
+                msToHours(s.duration_ms)
+        })),
+
+        sessions: sessions.map(s => ({
+            id: s.id,
+            site: s.site,
+            start: new Date(
+                s.start_time
+            ).toISOString(),
+            end: new Date(
+                s.end_time
+            ).toISOString(),
+            startTime: s.start_time,
+            endTime: s.end_time,
+            durationMs: s.duration_ms,
+            durationHours:
+                msToHours(s.duration_ms),
+            source: s.source,
+            recordedAt: new Date(
+                s.created_at
+            ).toISOString()
+        }))
+    };
+
+    const blob =
+        new Blob(
+            [
+                JSON.stringify(
+                    report,
+                    null,
+                    2
+                )
+            ],
+            { type: "application/json" }
+        );
+
+    const url =
+        URL.createObjectURL(blob);
+
+    const a =
+        document.createElement("a");
+
+    a.href = url;
+
+    a.download =
+        `website-tracker-report-${label}-${formatDate()}.json`;
+
+    a.click();
+
+    URL.revokeObjectURL(url);
+}
+
+document
+    .getElementById("exportDayBtn")
+    .addEventListener("click", () =>
+        runExport("day")
+    );
+
+document
+    .getElementById("exportWeekBtn")
+    .addEventListener("click", () =>
+        runExport("week")
+    );
+
+document
+    .getElementById("exportMonthBtn")
+    .addEventListener("click", () =>
+        runExport("month")
+    );
+
 document
     .getElementById("exportBtn")
-    .addEventListener(
-        "click",
-        async () => {
-
-            // Pull the full durable export from SQLite via the daemon
-            // (per-site totals + every raw session, survives Reset).
-            const resp =
-                await chrome.runtime.sendMessage({
-                    type: "getExport"
-                });
-
-            if (!resp || !resp.ok) {
-                alert(
-                    "Export failed: " +
-                    ((resp && resp.error) ||
-                        "daemon unavailable")
-                );
-
-                return;
-            }
-
-            const sites =
-                (resp.report &&
-                    resp.report.sites) ||
-                [];
-
-            const sessions =
-                (resp.report &&
-                    resp.report.sessions) ||
-                [];
-
-            const totalTimeMs =
-                sites.reduce(
-                    (a, s) =>
-                        a + s.duration_ms,
-                    0
-                );
-
-            const report = {
-                generatedAt:
-                    new Date().toISOString(),
-
-                source: "sqlite",
-
-                summary: {
-                    totalSites:
-                        sites.length,
-
-                    totalSessions:
-                        sessions.length,
-
-                    totalTimeMs,
-
-                    totalTimeHours:
-                        msToHours(
-                            totalTimeMs
-                        )
-                },
-
-                sites: sites.map(s => ({
-                    site: s.site,
-                    timeMs: s.duration_ms,
-                    timeHours:
-                        msToHours(
-                            s.duration_ms
-                        )
-                })),
-
-                sessions: sessions.map(s => ({
-                    id: s.id,
-                    site: s.site,
-                    start: new Date(
-                        s.start_time
-                    ).toISOString(),
-                    end: new Date(
-                        s.end_time
-                    ).toISOString(),
-                    startTime: s.start_time,
-                    endTime: s.end_time,
-                    durationMs: s.duration_ms,
-                    durationHours:
-                        msToHours(
-                            s.duration_ms
-                        ),
-                    source: s.source,
-                    recordedAt: new Date(
-                        s.created_at
-                    ).toISOString()
-                }))
-            };
-
-            const blob =
-                new Blob(
-                    [
-                        JSON.stringify(
-                            report,
-                            null,
-                            2
-                        )
-                    ],
-                    {
-                        type:
-                            "application/json"
-                    }
-                );
-
-            const url =
-                URL.createObjectURL(
-                    blob
-                );
-
-            const a =
-                document.createElement(
-                    "a"
-                );
-
-            a.href = url;
-
-            a.download =
-                `website-tracker-report-${formatDate()}.json`;
-
-            a.click();
-
-            URL.revokeObjectURL(
-                url
-            );
-        }
+    .addEventListener("click", () =>
+        runExport("all")
     );

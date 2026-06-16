@@ -10,7 +10,17 @@ pub enum Request {
     Report,
 
     #[serde(rename = "export")]
-    Export,
+    Export(ExportQuery),
+}
+
+// Optional epoch-ms bounds filtering sessions by start_time. Both None
+// (or an absent field) means all-time. The extension computes the
+// boundaries in local time and passes them down.
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+pub struct ExportQuery {
+    pub since: Option<i64>,
+    pub until: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]

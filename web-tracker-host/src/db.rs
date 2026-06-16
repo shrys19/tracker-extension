@@ -5,7 +5,10 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::messages::SessionPayload;
+use crate::messages::{
+    ExportQuery,
+    SessionPayload,
+};
 
 pub fn open_db() -> Result<Connection> {
     let db_path =
@@ -199,24 +202,36 @@ pub struct ExportResponse {
     pub sessions: Vec<SessionRow>,
 }
 
+// COALESCE(?, start_time) makes a NULL bound a no-op: start_time is
+// always >= / <= itself, so an absent bound matches every row.
+const RANGE_FILTER: &str = "
+    WHERE start_time >= COALESCE(?1, start_time)
+      AND start_time <= COALESCE(?2, start_time)
+";
+
 fn query_site_summaries(
     conn: &Connection,
+    since: Option<i64>,
+    until: Option<i64>,
 ) -> anyhow::Result<Vec<SiteSummary>> {
+    let sql = format!(
+        "
+        SELECT
+            site,
+            SUM(duration_ms)
+        FROM sessions
+        {RANGE_FILTER}
+        GROUP BY site
+        ORDER BY SUM(duration_ms) DESC
+        "
+    );
+
     let mut stmt =
-        conn.prepare(
-            "
-            SELECT
-                site,
-                SUM(duration_ms)
-            FROM sessions
-            GROUP BY site
-            ORDER BY SUM(duration_ms) DESC
-            "
-        )?;
+        conn.prepare(&sql)?;
 
     let rows =
         stmt.query_map(
-            [],
+            params![since, until],
             |row| {
                 Ok(
                     SiteSummary {
@@ -239,8 +254,9 @@ fn query_site_summaries(
     Ok(sites)
 }
 
-// Lightweight: per-site totals only. Used by the popup list, which
-// refreshes frequently, so it must not haul every raw row over the wire.
+// Lightweight: per-site totals only, all-time. Used by the popup list,
+// which refreshes frequently, so it must not haul every raw row over
+// the wire.
 pub fn generate_report(
     conn: &Connection,
 ) -> anyhow::Result<ReportResponse>
@@ -252,39 +268,51 @@ pub fn generate_report(
             sites:
                 query_site_summaries(
                     conn,
+                    None,
+                    None,
                 )?,
         }
     )
 }
 
-// Full dump: per-site totals plus every raw session row. Used only by
-// the export button (on demand), not the periodic list refresh.
+// Full dump: per-site totals plus every raw session row, optionally
+// restricted to a [since, until] window (epoch ms, by start_time).
+// Used only by the export buttons (on demand).
 pub fn generate_export(
     conn: &Connection,
+    query: &ExportQuery,
 ) -> anyhow::Result<ExportResponse>
 {
+    let since = query.since;
+    let until = query.until;
+
     let sites =
-        query_site_summaries(conn)?;
+        query_site_summaries(
+            conn, since, until,
+        )?;
+
+    let sql = format!(
+        "
+        SELECT
+            id,
+            site,
+            start_time,
+            end_time,
+            duration_ms,
+            source,
+            created_at
+        FROM sessions
+        {RANGE_FILTER}
+        ORDER BY start_time
+        "
+    );
 
     let mut stmt =
-        conn.prepare(
-            "
-            SELECT
-                id,
-                site,
-                start_time,
-                end_time,
-                duration_ms,
-                source,
-                created_at
-            FROM sessions
-            ORDER BY start_time
-            "
-        )?;
+        conn.prepare(&sql)?;
 
     let session_rows =
         stmt.query_map(
-            [],
+            params![since, until],
             |row| {
                 Ok(
                     SessionRow {

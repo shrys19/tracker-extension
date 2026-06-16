@@ -70,10 +70,11 @@ fn run() -> Result<()> {
         )?;
     }
 
-    Request::Export => {
+    Request::Export(query) => {
         let export =
             db::generate_export(
                 &conn,
+                &query,
             )?;
 
         write_message(

@@ -187,7 +187,21 @@ chrome.runtime.onMessage.addListener(
             return;
         }
 
-        sendToDaemon({ type: daemonType })
+        const daemonMsg = {
+            type: daemonType
+        };
+
+        // export carries an optional { since, until } range; report
+        // (a unit request) carries nothing.
+        if (msg.payload) {
+            daemonMsg.payload = msg.payload;
+        } else if (
+            daemonType === "export"
+        ) {
+            daemonMsg.payload = {};
+        }
+
+        sendToDaemon(daemonMsg)
             .then(report =>
                 sendResponse({
                     ok: true,
