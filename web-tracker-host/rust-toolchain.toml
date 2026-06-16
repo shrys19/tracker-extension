@@ -1,0 +1,5 @@
+[toolchain]
+# edition = "2024" in Cargo.toml requires Rust 1.85+.
+channel = "1.85.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

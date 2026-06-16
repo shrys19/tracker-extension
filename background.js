@@ -44,16 +44,65 @@ async function setSession(session) {
     });
 }
 
-async function sendSessionToDaemon(
-    site,
-    startTime,
-    endTime,
-    durationMs
-) {
+// Serialize all tracking mutations. Multiple listeners (tab, window,
+// idle, alarm) fire concurrently; without this they interleave their
+// read-modify-write of the session and flush the same slice twice
+// (duplicate rows / double counting) or flap the active session.
+let opChain = Promise.resolve();
+
+function serialize(fn) {
+    const run = opChain.then(fn, fn);
+
+    opChain = run.catch(() => {});
+
+    return run;
+}
+
+// Send one request to the native host and resolve with its reply.
+// The daemon reads one message, replies, exits — so we settle exactly
+// once on reply, on clean disconnect, on error, or after a timeout.
+function sendToDaemon(message) {
     return new Promise(
         (resolve, reject) => {
+            let settled = false;
+
+            let port;
+
+            // Always settle exactly once, then close the port.
+            const settle = (fn, arg) => {
+                if (settled) {
+                    return;
+                }
+
+                settled = true;
+
+                clearTimeout(timer);
+
+                try {
+                    if (port) {
+                        port.disconnect();
+                    }
+                } catch {}
+
+                fn(arg);
+            };
+
+            // If the daemon exits cleanly without replying, onDisconnect
+            // has no lastError and we must still resolve — otherwise the
+            // await hangs.
+            const timer = setTimeout(
+                () =>
+                    settle(
+                        reject,
+                        new Error(
+                            "daemon timeout"
+                        )
+                    ),
+                5000
+            );
+
             try {
-                const port =
+                port =
                     chrome.runtime.connectNative(
                         "com.webtracker.host"
                     );
@@ -69,41 +118,127 @@ async function sendSessionToDaemon(
                             )
                         );
 
-                        resolve(response);
+                        settle(
+                            resolve,
+                            response
+                        );
                     }
                 );
 
                 port.onDisconnect.addListener(
                     () => {
-                        if (
+                        const err =
                             chrome.runtime
-                                .lastError
-                        ) {
-                            reject(
-                                chrome.runtime
-                                    .lastError
+                                .lastError;
+
+                        if (err) {
+                            settle(reject, err);
+                        } else {
+                            settle(
+                                resolve,
+                                undefined
                             );
                         }
                     }
                 );
 
-                port.postMessage({
-                    type: "session",
-                    payload: {
-                        site,
-                        start_time:
-                            startTime,
-                        end_time:
-                            endTime,
-                        duration_ms:
-                            durationMs
-                    }
-                });
+                port.postMessage(message);
             } catch (e) {
-                reject(e);
+                settle(reject, e);
             }
         }
     );
+}
+
+function sendSessionToDaemon(
+    site,
+    startTime,
+    endTime,
+    durationMs
+) {
+    return sendToDaemon({
+        type: "session",
+        payload: {
+            site,
+            start_time: startTime,
+            end_time: endTime,
+            duration_ms: durationMs
+        }
+    });
+}
+
+// Popup asks for a durable report straight from SQLite (full history,
+// survives the local-cache "Reset"). Routed through the worker because
+// it owns the native-messaging connection.
+chrome.runtime.onMessage.addListener(
+    (msg, sender, sendResponse) => {
+        if (msg && msg.type === "getReport") {
+            sendToDaemon({ type: "report" })
+                .then(report =>
+                    sendResponse({
+                        ok: true,
+                        report
+                    })
+                )
+                .catch(e =>
+                    sendResponse({
+                        ok: false,
+                        error: String(
+                            (e && e.message) || e
+                        )
+                    })
+                );
+
+            return true; // async sendResponse
+        }
+    }
+);
+
+// Write a time slice to BOTH the local siteTimes cache (live display)
+// and the daemon (durable SQLite). The local write happens first and
+// unconditionally — tracking must never depend on the daemon being
+// installed or responsive. The daemon send is best-effort.
+async function flushSlice(
+    domain,
+    startTime,
+    endTime
+) {
+    const elapsed =
+        endTime - startTime;
+
+    if (elapsed <= 0) {
+        return;
+    }
+
+    const data =
+        await chrome.storage.local.get(
+            "siteTimes"
+        );
+
+    const siteTimes =
+        data.siteTimes || {};
+
+    siteTimes[domain] =
+        (siteTimes[domain] || 0)
+        + elapsed;
+
+    await chrome.storage.local.set({
+        siteTimes
+    });
+
+    try {
+        await sendSessionToDaemon(
+            domain,
+            startTime,
+            endTime,
+            elapsed
+        );
+    } catch (e) {
+        console.error(
+            "Failed to send session",
+            e
+        );
+    }
 }
 
 async function saveCurrentSession() {
@@ -122,34 +257,17 @@ async function saveCurrentSession() {
         return;
     }
 
-    const elapsed =
-        Date.now() -
-        startTimestamp;
+    const now = Date.now();
 
-    if (elapsed <= 0) {
-        return;
-    }
-
-    const data =
-        await chrome.storage.local.get(
-            "siteTimes"
-        );
-
-    const siteTimes =
-        data.siteTimes || {};
-
-    siteTimes[currentDomain] =
-        (siteTimes[currentDomain] || 0)
-        + elapsed;
-
-    await chrome.storage.local.set({
-        siteTimes
-    });
+    await flushSlice(
+        currentDomain,
+        startTimestamp,
+        now
+    );
 
     await setSession({
         currentDomain,
-        startTimestamp:
-            Date.now()
+        startTimestamp: now
     });
 }
 
@@ -169,46 +287,11 @@ async function stopTracking() {
         return;
     }
 
-    const endTime =
-        Date.now();
-
-    const elapsed =
-        endTime -
-        startTimestamp;
-
-    if (elapsed <= 0) {
-        return;
-    }
-
-    try {
-        await sendSessionToDaemon(
-            currentDomain,
-            startTimestamp,
-            endTime,
-            elapsed
-        );
-    } catch (e) {
-        console.error(
-            "Failed to send session",
-            e
-        );
-    }
-
-    const data =
-        await chrome.storage.local.get(
-            "siteTimes"
-        );
-
-    const siteTimes =
-        data.siteTimes || {};
-
-    siteTimes[currentDomain] =
-        (siteTimes[currentDomain] || 0)
-        + elapsed;
-
-    await chrome.storage.local.set({
-        siteTimes
-    });
+    await flushSlice(
+        currentDomain,
+        startTimestamp,
+        Date.now()
+    );
 
     await setSession({
         currentDomain: null,
@@ -283,86 +366,56 @@ async function handleTab(tab) {
 }
 
 chrome.tabs.onActivated.addListener(
-    async activeInfo => {
-        try {
-            const tab =
-                await chrome.tabs.get(
-                    activeInfo.tabId
-                );
+    activeInfo =>
+        serialize(async () => {
+            try {
+                const tab =
+                    await chrome.tabs.get(
+                        activeInfo.tabId
+                    );
 
-            await handleTab(tab);
-        } catch (e) {
-            console.error(e);
-        }
-    }
+                await handleTab(tab);
+            } catch (e) {
+                console.error(e);
+            }
+        })
 );
 
 chrome.tabs.onUpdated.addListener(
-    async (
-        tabId,
-        changeInfo,
-        tab
-    ) => {
+    (tabId, changeInfo, tab) => {
         if (
-            changeInfo.status ===
+            changeInfo.status !==
             "complete"
         ) {
-            await handleTab(tab);
+            return;
         }
+
+        serialize(() =>
+            handleTab(tab)
+        );
     }
 );
 
+// Note: deliberately do NOT stop tracking on
+// WINDOW_ID_NONE. On Linux the action popup steals window focus,
+// which would stop the very session the popup is trying to display.
+// Idle detection below covers the user actually being away.
 chrome.windows.onFocusChanged.addListener(
-    async windowId => {
-        try {
-            if (
-                windowId ===
-                chrome.windows
-                    .WINDOW_ID_NONE
-            ) {
-                await stopTracking();
-                return;
-            }
+    windowId =>
+        serialize(async () => {
+            try {
+                if (
+                    windowId ===
+                    chrome.windows
+                        .WINDOW_ID_NONE
+                ) {
+                    return;
+                }
 
-            const tabs =
-                await chrome.tabs.query({
-                    active: true,
-                    windowId
-                });
-
-            if (tabs.length) {
-                await handleTab(
-                    tabs[0]
-                );
-            }
-        } catch (e) {
-            console.error(e);
-        }
-    }
-);
-
-chrome.idle.setDetectionInterval(
-    60
-);
-
-chrome.idle.onStateChanged.addListener(
-    async state => {
-        try {
-            if (
-                state === "idle" ||
-                state === "locked"
-            ) {
-                await stopTracking();
-                return;
-            }
-
-            if (
-                state === "active"
-            ) {
                 const tabs =
                     await chrome.tabs.query({
                         active: true,
-                        lastFocusedWindow: true
+                        windowId
                     });
 
                 if (tabs.length) {
@@ -370,11 +423,47 @@ chrome.idle.onStateChanged.addListener(
                         tabs[0]
                     );
                 }
+            } catch (e) {
+                console.error(e);
             }
-        } catch (e) {
-            console.error(e);
-        }
-    }
+        })
+);
+
+chrome.idle.setDetectionInterval(
+    60
+);
+
+chrome.idle.onStateChanged.addListener(
+    state =>
+        serialize(async () => {
+            try {
+                if (
+                    state === "idle" ||
+                    state === "locked"
+                ) {
+                    await stopTracking();
+                    return;
+                }
+
+                if (
+                    state === "active"
+                ) {
+                    const tabs =
+                        await chrome.tabs.query({
+                            active: true,
+                            lastFocusedWindow: true
+                        });
+
+                    if (tabs.length) {
+                        await handleTab(
+                            tabs[0]
+                        );
+                    }
+                }
+            } catch (e) {
+                console.error(e);
+            }
+        })
 );
 
 chrome.alarms.create(
@@ -385,32 +474,34 @@ chrome.alarms.create(
 );
 
 chrome.alarms.onAlarm.addListener(
-    async alarm => {
+    alarm => {
         if (
             alarm.name ===
             "flushTracking"
         ) {
-            await saveCurrentSession();
+            serialize(saveCurrentSession);
         }
     }
 );
 
-async function initializeTracking() {
-    try {
-        const tabs =
-            await chrome.tabs.query({
-                active: true,
-                lastFocusedWindow: true
-            });
+function initializeTracking() {
+    return serialize(async () => {
+        try {
+            const tabs =
+                await chrome.tabs.query({
+                    active: true,
+                    lastFocusedWindow: true
+                });
 
-        if (tabs.length) {
-            await handleTab(
-                tabs[0]
-            );
+            if (tabs.length) {
+                await handleTab(
+                    tabs[0]
+                );
+            }
+        } catch (e) {
+            console.error(e);
         }
-    } catch (e) {
-        console.error(e);
-    }
+    });
 }
 
 chrome.runtime.onInstalled.addListener(
@@ -423,6 +514,6 @@ chrome.runtime.onStartup.addListener(
 
 chrome.runtime.onSuspend.addListener(
     () => {
-        stopTracking();
+        serialize(stopTracking);
     }
 );

@@ -3,7 +3,7 @@ use directories::ProjectDirs;
 use rusqlite::{params, Connection};
 use std::fs;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::messages::SessionPayload;
 
@@ -13,6 +13,26 @@ pub fn open_db() -> Result<Connection> {
 
     let conn =
         Connection::open(db_path)?;
+
+    // Each native-messaging request is a separate process opening the
+    // same file. WAL lets a reader (report) run concurrently with a
+    // writer (session insert); the busy timeout makes either retry
+    // instead of failing with SQLITE_BUSY.
+    conn.busy_timeout(
+        Duration::from_secs(5),
+    )?;
+
+    conn.pragma_update(
+        None,
+        "journal_mode",
+        "WAL",
+    )?;
+
+    conn.pragma_update(
+        None,
+        "synchronous",
+        "NORMAL",
+    )?;
 
     initialize(&conn)?;
 
@@ -68,6 +88,11 @@ fn initialize(
 
         CREATE INDEX IF NOT EXISTS idx_start_time
             ON sessions(start_time);
+
+        -- A session starts once at a given millisecond, so this pair
+        -- uniquely identifies a slice. Rejects race-duplicate inserts.
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_site_start
+            ON sessions(site, start_time);
         "#,
     )?;
 
@@ -87,7 +112,7 @@ pub fn insert_session(
 
     conn.execute(
         r#"
-        INSERT INTO sessions (
+        INSERT OR IGNORE INTO sessions (
             site,
             start_time,
             end_time,

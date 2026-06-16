@@ -43,18 +43,61 @@ async function getActiveSession() {
     );
 }
 
+// Durable per-site totals from SQLite (via the daemon). Cached so the
+// 1s re-render loop doesn't spawn the native host every tick. Falls
+// back to the local siteTimes cache if the daemon is unavailable.
+let daemonTimes = {};
+
+async function refreshDaemonTimes() {
+    try {
+        const resp =
+            await chrome.runtime.sendMessage({
+                type: "getReport"
+            });
+
+        if (
+            resp &&
+            resp.ok &&
+            resp.report &&
+            resp.report.sites
+        ) {
+            const map = {};
+
+            for (const s of resp.report.sites) {
+                map[s.site] = s.duration_ms;
+            }
+
+            daemonTimes = map;
+
+            return;
+        }
+    } catch (e) {
+        console.error(
+            "report fetch failed",
+            e
+        );
+    }
+
+    const data =
+        await chrome.storage.local.get(
+            "siteTimes"
+        );
+
+    daemonTimes = data.siteTimes || {};
+}
+
 async function loadData() {
     const data =
-        await chrome.storage.local.get([
-            "trackedSites",
-            "siteTimes"
-        ]);
+        await chrome.storage.local.get(
+            "trackedSites"
+        );
 
     const trackedSites =
         data.trackedSites || [];
 
-    const siteTimes =
-        data.siteTimes || {};
+    // Base totals come from the daemon (durable). The in-progress
+    // slice since the last flush is added live below.
+    const siteTimes = daemonTimes;
 
     const activeSession =
         await getActiveSession();
@@ -80,6 +123,7 @@ async function loadData() {
 
         if (
             activeSession.startTimestamp &&
+            activeSession.currentDomain &&
             (
                 activeSession.currentDomain === site ||
                 activeSession.currentDomain.endsWith("." + site)
@@ -235,11 +279,23 @@ document
         }
     );
 
-loadData();
+// Initial paint: pull durable totals from the daemon, then render.
+(async () => {
+    await refreshDaemonTimes();
+    loadData();
+})();
 
+// Cheap re-render every second so the active site's time ticks live.
 setInterval(() => {
     loadData();
 }, 1000);
+
+// Periodically re-pull from the daemon to pick up flushed slices
+// (the worker flushes about once a minute).
+setInterval(async () => {
+    await refreshDaemonTimes();
+    loadData();
+}, 30000);
 
 
 document
@@ -248,68 +304,61 @@ document
         "click",
         async () => {
 
-            const data =
-                await chrome.storage.local.get(
-                    null
+            // Pull the durable report from SQLite via the daemon
+            // (full history, survives the local-cache Reset).
+            const resp =
+                await chrome.runtime.sendMessage({
+                    type: "getReport"
+                });
+
+            if (!resp || !resp.ok) {
+                alert(
+                    "Export failed: " +
+                    ((resp && resp.error) ||
+                        "daemon unavailable")
                 );
 
-            const trackedSites =
-                data.trackedSites || [];
+                return;
+            }
 
-            const siteTimes =
-                data.siteTimes || {};
+            const sites =
+                (resp.report &&
+                    resp.report.sites) ||
+                [];
 
-            const activeSession =
-                data.activeSession || null;
+            const totalTimeMs =
+                sites.reduce(
+                    (a, s) =>
+                        a + s.duration_ms,
+                    0
+                );
 
             const report = {
                 generatedAt:
                     new Date().toISOString(),
 
-                trackedSites,
-
-                activeSession,
+                source: "sqlite",
 
                 summary: {
                     totalSites:
-                        trackedSites.length,
+                        sites.length,
 
-                    totalTimeMs:
-                        Object.values(
-                            siteTimes
-                        ).reduce(
-                            (a, b) => a + b,
-                            0
-                        ),
+                    totalTimeMs,
 
                     totalTimeHours:
                         msToHours(
-                            Object.values(
-                                siteTimes
-                            ).reduce(
-                                (a, b) => a + b,
-                                0
-                            )
+                            totalTimeMs
                         )
                 },
 
-                sites: Object.entries(
-                    siteTimes
-                )
-                    .sort(
-                        (a, b) =>
-                            b[1] - a[1]
-                    )
-                    .map(
-                        ([site, time]) => ({
-                            site,
-                            timeMs: time,
-                            timeHours:
-                                msToHours(
-                                    time
-                                )
-                        })
-                    )
+                sites: sites.map(s => ({
+                    site: s.site,
+                    timeMs: s.duration_ms,
+                    timeHours:
+                        msToHours(
+                            s.duration_ms
+                        )
+                }))
             };
 
             const blob =

@@ -1,0 +1,9 @@
+{
+  "name": "com.webtracker.host",
+  "description": "Website Time Tracker native messaging host",
+  "path": "REPLACE_WITH_ABSOLUTE_PATH_TO/web-tracker-host/target/release/web-tracker-host",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://REPLACE_WITH_EXTENSION_ID/"
+  ]
+}
