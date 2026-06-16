@@ -87,13 +87,44 @@ fn initialize(
 
         CREATE INDEX IF NOT EXISTS idx_start_time
             ON sessions(start_time);
-
-        -- A session starts once at a given millisecond, so this pair
-        -- uniquely identifies a slice. Rejects race-duplicate inserts.
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_site_start
-            ON sessions(site, start_time);
         "#,
     )?;
+
+    ensure_unique_index(conn)?;
+
+    Ok(())
+}
+
+// A session starts once at a given millisecond, so (site, start_time)
+// uniquely identifies a slice; the unique index rejects race-duplicate
+// inserts. But a database written by an older build may already contain
+// those duplicates, and SQLite refuses to build a unique index over
+// existing duplicate data ("UNIQUE constraint failed"). So if creation
+// fails, dedupe (keep the lowest id per group) and retry once. Once the
+// index exists this is a no-op, so the dedupe only runs on first heal.
+fn ensure_unique_index(
+    conn: &Connection,
+) -> Result<()> {
+    const CREATE: &str = "
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_site_start
+            ON sessions(site, start_time)
+    ";
+
+    if conn.execute(CREATE, []).is_err() {
+        conn.execute(
+            "
+            DELETE FROM sessions
+            WHERE id NOT IN (
+                SELECT MIN(id)
+                FROM sessions
+                GROUP BY site, start_time
+            )
+            ",
+            [],
+        )?;
+
+        conn.execute(CREATE, [])?;
+    }
 
     Ok(())
 }
