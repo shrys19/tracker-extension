@@ -1,0 +1,179 @@
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    width: 400px;
+    min-height: 500px;
+    font-family:
+        Inter,
+        system-ui,
+        -apple-system,
+        BlinkMacSystemFont,
+        sans-serif;
+    background: #f5f7fb;
+    color: #1f2937;
+}
+
+.container {
+    padding: 16px;
+}
+
+.header {
+    text-align: center;
+    margin-bottom: 16px;
+}
+
+.header h1 {
+    margin: 0;
+    font-size: 22px;
+}
+
+.header p {
+    margin-top: 6px;
+    color: #6b7280;
+    font-size: 13px;
+}
+
+.card {
+    background: white;
+    border-radius: 14px;
+    padding: 14px;
+    margin-bottom: 14px;
+    box-shadow:
+        0 1px 3px rgba(0,0,0,0.08),
+        0 8px 24px rgba(0,0,0,0.05);
+}
+
+.card h2 {
+    margin-top: 0;
+    font-size: 15px;
+    margin-bottom: 12px;
+}
+
+.add-row {
+    display: flex;
+    gap: 8px;
+}
+
+input {
+    flex: 1;
+    padding: 10px 12px;
+    border: 1px solid #d1d5db;
+    border-radius: 10px;
+    outline: none;
+    font-size: 14px;
+}
+
+input:focus {
+    border-color: #2563eb;
+}
+
+button {
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: 0.15s;
+}
+
+#addBtn {
+    background: #2563eb;
+    color: white;
+    padding: 10px 16px;
+    font-weight: 600;
+}
+
+#addBtn:hover {
+    background: #1d4ed8;
+}
+
+#siteList {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+#siteList li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: #f9fafb;
+    padding: 10px;
+    border-radius: 10px;
+    margin-bottom: 8px;
+}
+
+#siteList button {
+    background: #ef4444;
+    color: white;
+    padding: 6px 10px;
+    font-size: 12px;
+}
+
+#siteList button:hover {
+    background: #dc2626;
+}
+
+#stats {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.stat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: #f9fafb;
+    padding: 12px;
+    border-radius: 10px;
+}
+
+.site-name {
+    font-weight: 600;
+}
+
+.site-time {
+    font-family:
+        ui-monospace,
+        SFMono-Regular,
+        monospace;
+}
+
+.active {
+    color: #16a34a;
+    font-size: 12px;
+    margin-left: 6px;
+}
+
+.danger {
+    width: 100%;
+    background: #ef4444;
+    color: white;
+    padding: 12px;
+    font-weight: 600;
+}
+
+.danger:hover {
+    background: #dc2626;
+}
+
+.empty {
+    color: #6b7280;
+    text-align: center;
+    padding: 10px;
+}
+
+.export {
+    width: 100%;
+    background: #2563eb;
+    color: white;
+    padding: 12px;
+    font-weight: 600;
+    margin-bottom: 10px;
+}
+
+.export:hover {
+    background: #1d4ed8;
+}
