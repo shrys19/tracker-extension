@@ -44,6 +44,68 @@ async function setSession(session) {
     });
 }
 
+async function sendSessionToDaemon(
+    site,
+    startTime,
+    endTime,
+    durationMs
+) {
+    return new Promise(
+        (resolve, reject) => {
+            try {
+                const port =
+                    chrome.runtime.connectNative(
+                        "com.webtracker.host"
+                    );
+
+                port.onMessage.addListener(
+                    response => {
+                        console.log(
+                            "Daemon response:",
+                            JSON.stringify(
+                                response,
+                                null,
+                                2
+                            )
+                        );
+
+                        resolve(response);
+                    }
+                );
+
+                port.onDisconnect.addListener(
+                    () => {
+                        if (
+                            chrome.runtime
+                                .lastError
+                        ) {
+                            reject(
+                                chrome.runtime
+                                    .lastError
+                            );
+                        }
+                    }
+                );
+
+                port.postMessage({
+                    type: "session",
+                    payload: {
+                        site,
+                        start_time:
+                            startTime,
+                        end_time:
+                            endTime,
+                        duration_ms:
+                            durationMs
+                    }
+                });
+            } catch (e) {
+                reject(e);
+            }
+        }
+    );
+}
+
 async function saveCurrentSession() {
     const session =
         await getSession();
@@ -77,8 +139,8 @@ async function saveCurrentSession() {
         data.siteTimes || {};
 
     siteTimes[currentDomain] =
-        (siteTimes[currentDomain] || 0) +
-        elapsed;
+        (siteTimes[currentDomain] || 0)
+        + elapsed;
 
     await chrome.storage.local.set({
         siteTimes
@@ -86,7 +148,8 @@ async function saveCurrentSession() {
 
     await setSession({
         currentDomain,
-        startTimestamp: Date.now()
+        startTimestamp:
+            Date.now()
     });
 }
 
@@ -106,9 +169,30 @@ async function stopTracking() {
         return;
     }
 
+    const endTime =
+        Date.now();
+
     const elapsed =
-        Date.now() -
+        endTime -
         startTimestamp;
+
+    if (elapsed <= 0) {
+        return;
+    }
+
+    try {
+        await sendSessionToDaemon(
+            currentDomain,
+            startTimestamp,
+            endTime,
+            elapsed
+        );
+    } catch (e) {
+        console.error(
+            "Failed to send session",
+            e
+        );
+    }
 
     const data =
         await chrome.storage.local.get(
@@ -119,8 +203,8 @@ async function stopTracking() {
         data.siteTimes || {};
 
     siteTimes[currentDomain] =
-        (siteTimes[currentDomain] || 0) +
-        elapsed;
+        (siteTimes[currentDomain] || 0)
+        + elapsed;
 
     await chrome.storage.local.set({
         siteTimes
@@ -157,12 +241,23 @@ async function handleTab(tab) {
     const matchedSite =
         trackedSites.find(site =>
             domain === site ||
-            domain.endsWith("." + site)
+            domain.endsWith(
+                "." + site
+            )
         );
 
     const session =
         await getSession();
 
+    console.log(
+        "handleTab",
+        {
+            domain,
+            matchedSite,
+            current:
+                session.currentDomain
+        }
+    );
     if (
         session.currentDomain ===
         matchedSite
@@ -179,6 +274,11 @@ async function handleTab(tab) {
             startTimestamp:
                 Date.now()
         });
+
+        console.log(
+            "Started tracking:",
+            matchedSite
+        );
     }
 }
 
