@@ -39,26 +39,41 @@ script handles both automatically.
 3. **Load unpacked** → select the repo root.
 4. Copy the **extension ID** Chrome assigns (needed below).
 
-### 2. Build + register (macOS and Linux)
+### 2. Build + register
 
 Requires **Rust 1.85+** (the crate uses `edition = "2024"`; older toolchains
-fail to build — run `rustup update` if needed). macOS also needs the Xcode
-Command Line Tools (`xcode-select --install`) for the bundled SQLite C build.
+fail to build — run `rustup update` if needed). Platform extras:
+
+- **macOS** — Xcode Command Line Tools (`xcode-select --install`) for the
+  bundled SQLite C build.
+- **Windows** — MSVC Build Tools (C compiler) for the bundled SQLite build.
+
+**macOS / Linux:**
 
 ```sh
 cd web-tracker-host
 ./install.sh <YOUR_EXTENSION_ID>
 ```
 
-The script builds the release binary, then writes
-`com.webtracker.host.json` (with the resolved absolute binary path and your
-extension ID) into the `NativeMessagingHosts` directory of every installed
-Chromium-family browser (Chrome, Chromium, Brave, Edge, Opera / Opera GX):
+**Windows** (PowerShell):
 
-| OS    | Example directory                                                           |
-| ----- | --------------------------------------------------------------------------- |
-| macOS | `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/`          |
-| Linux | `~/.config/google-chrome/NativeMessagingHosts/`                             |
+```powershell
+cd web-tracker-host
+.\install.ps1 <YOUR_EXTENSION_ID>
+```
+
+Each script builds the release binary, writes `com.webtracker.host.json` (with
+the resolved absolute binary path and your extension ID), and registers it for
+every Chromium-family browser (Chrome, Chromium, Brave, Edge, Opera / Opera GX).
+On macOS/Linux that means dropping the manifest into each `NativeMessagingHosts`
+directory; on Windows it means writing the manifest path into the registry under
+`HKCU\Software\<Browser>\NativeMessagingHosts\` (Opera reads Chrome's key):
+
+| OS      | Where the host is registered                                              |
+| ------- | ------------------------------------------------------------------------- |
+| macOS   | `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/`        |
+| Linux   | `~/.config/google-chrome/NativeMessagingHosts/`                            |
+| Windows | `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.webtracker.host`     |
 
 Reload the extension afterwards so it picks up the host.
 
@@ -103,24 +118,89 @@ sqlite3 ~/.local/share/webtracker/tracker.db \
   'SELECT site, SUM(duration_ms) FROM sessions GROUP BY site;'
 ```
 
+## Reference: file & registry paths
+
+### Native host registration
+
+Where each `install` script writes `com.webtracker.host.json` (macOS/Linux) or
+the registry entry pointing at it (Windows). `~` = the user's home directory.
+
+**macOS** — under `~/Library/Application Support/`:
+
+| Browser      | Path                                                         |
+| ------------ | ------------------------------------------------------------ |
+| Chrome       | `Google/Chrome/NativeMessagingHosts/`                        |
+| Chrome Beta  | `Google/Chrome Beta/NativeMessagingHosts/`                   |
+| Chrome Canary| `Google/Chrome Canary/NativeMessagingHosts/`                 |
+| Chromium     | `Chromium/NativeMessagingHosts/`                             |
+| Brave        | `BraveSoftware/Brave-Browser/NativeMessagingHosts/`          |
+| Edge         | `Microsoft Edge/NativeMessagingHosts/`                       |
+| Opera        | `com.operasoftware.Opera/NativeMessagingHosts/`              |
+| Opera GX     | `com.operasoftware.OperaGX/NativeMessagingHosts/`            |
+
+**Linux** — under `~/.config/`:
+
+| Browser      | Path                                                  |
+| ------------ | ----------------------------------------------------- |
+| Chrome       | `google-chrome/NativeMessagingHosts/`                 |
+| Chrome Beta  | `google-chrome-beta/NativeMessagingHosts/`            |
+| Chromium     | `chromium/NativeMessagingHosts/`                      |
+| Brave        | `BraveSoftware/Brave-Browser/NativeMessagingHosts/`   |
+| Edge         | `microsoft-edge/NativeMessagingHosts/`                |
+| Opera        | `opera/NativeMessagingHosts/`                          |
+| Opera GX     | `opera-gx/NativeMessagingHosts/`                      |
+
+**Windows** — registry value (HKCU), default value = path to the JSON manifest.
+Append `\com.webtracker.host` to each key:
+
+| Browser  | Registry key                                          |
+| -------- | ----------------------------------------------------- |
+| Chrome   | `HKCU\Software\Google\Chrome\NativeMessagingHosts`    |
+| Chromium | `HKCU\Software\Chromium\NativeMessagingHosts`         |
+| Edge     | `HKCU\Software\Microsoft\Edge\NativeMessagingHosts`   |
+| Brave    | `HKCU\Software\BraveSoftware\Brave-Browser\NativeMessagingHosts` |
+| Opera    | reads Chrome's key (`HKCU\Software\Google\Chrome\...`) |
+
+### Database location
+
+The daemon resolves this via the `directories` crate from the app id
+`com` / `WebTracker` / `WebTracker` — **same DB regardless of which browser
+spawned it**, so all browsers on one machine share it. Separate machines have
+separate DBs (no sync).
+
+| OS      | `tracker.db` path                                                            |
+| ------- | --------------------------------------------------------------------------- |
+| Linux   | `~/.local/share/webtracker/tracker.db` (name lowercased; honors `$XDG_DATA_HOME`) |
+| macOS   | `~/Library/Application Support/com.WebTracker.WebTracker/tracker.db`         |
+| Windows | `%APPDATA%\WebTracker\WebTracker\data\tracker.db`                            |
+
 ## Database schema
 
 `sessions(id, site, start_time, end_time, duration_ms, source, created_at)` —
-one row per flushed slice. Indexed on `site` and `start_time`.
+one row per flushed slice. Indexes: `site`, `start_time`, and a **`UNIQUE(site,
+start_time)`** that rejects race-duplicate inserts. A session starts once per
+millisecond, so that pair identifies a slice. Inserts use `INSERT OR IGNORE`;
+on first open the daemon self-heals a DB containing legacy duplicates (dedupes,
+keeping the lowest id, then builds the unique index).
 
 ## Usage
 
 - **Add site** — track an exact domain or any subdomain of it (`youtube.com`
   matches `m.youtube.com`).
 - **Remove** — stop tracking a site (history kept in SQLite).
-- **Reset** — clears the live `siteTimes` cache only; SQLite is untouched.
-- **Export** — downloads a JSON report of the live cache.
+- **Reset** — clears the live `siteTimes` cache only; the SQLite history (and
+  therefore the displayed totals, which read from the daemon) is untouched.
+- **Export** — downloads a JSON report built from the daemon's SQLite history
+  (durable, survives Reset).
 
 ## Notes
 
-- Tracking pauses on idle/locked (60s detection) and when no Chrome window has
-  focus.
-- The Rust host also implements a `report` request (aggregated per-site totals
-  from SQLite); the extension does not call it yet.
+- The popup list and export read durable totals from the daemon/SQLite; the live
+  in-progress slice is added on top for the active site.
+- Tracking pauses on idle/locked (60s detection). It deliberately does **not**
+  stop on window-focus loss — on Linux the action popup steals focus, which would
+  stop the very session the popup is displaying.
+- All tracking mutations are serialized in the service worker so concurrent
+  tab/window/idle/alarm events can't double-flush a slice.
 - MV3 service workers offer no guaranteed async window on suspend, so the
   `onSuspend` flush is best-effort; the periodic alarm is the reliable path.
