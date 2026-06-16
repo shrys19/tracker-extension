@@ -14,10 +14,15 @@ pub fn open_db() -> Result<Connection> {
     let conn =
         Connection::open(db_path)?;
 
-    // Each native-messaging request is a separate process opening the
-    // same file. WAL lets a reader (report) run concurrently with a
-    // writer (session insert); the busy timeout makes either retry
-    // instead of failing with SQLITE_BUSY.
+    // Each native-messaging request is a separate, short-lived process
+    // opening the same file. The busy timeout makes a writer wait for
+    // the lock instead of failing with SQLITE_BUSY when another browser
+    // (e.g. Chrome and Opera on the same machine) flushes at the same
+    // time. Rollback journal (the default) is used deliberately: WAL is
+    // meant for long-lived connections and, with one-shot processes,
+    // defers its checkpoint into the main db so the file looks frozen.
+    // Forcing DELETE here also migrates any existing WAL database back,
+    // folding its -wal contents into the main file.
     conn.busy_timeout(
         Duration::from_secs(5),
     )?;
@@ -25,13 +30,7 @@ pub fn open_db() -> Result<Connection> {
     conn.pragma_update(
         None,
         "journal_mode",
-        "WAL",
-    )?;
-
-    conn.pragma_update(
-        None,
-        "synchronous",
-        "NORMAL",
+        "DELETE",
     )?;
 
     initialize(&conn)?;
