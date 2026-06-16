@@ -8,6 +8,9 @@ pub enum Request {
 
     #[serde(rename = "report")]
     Report,
+
+    #[serde(rename = "export")]
+    Export,
 }
 
 #[derive(Debug, Deserialize)]

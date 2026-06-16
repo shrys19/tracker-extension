@@ -69,6 +69,17 @@ fn run() -> Result<()> {
             &report,
         )?;
     }
+
+    Request::Export => {
+        let export =
+            db::generate_export(
+                &conn,
+            )?;
+
+        write_message(
+            &export,
+        )?;
+    }
 }
 
     Ok(())

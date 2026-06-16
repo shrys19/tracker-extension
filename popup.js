@@ -304,11 +304,11 @@ document
         "click",
         async () => {
 
-            // Pull the durable report from SQLite via the daemon
-            // (full history, survives the local-cache Reset).
+            // Pull the full durable export from SQLite via the daemon
+            // (per-site totals + every raw session, survives Reset).
             const resp =
                 await chrome.runtime.sendMessage({
-                    type: "getReport"
+                    type: "getExport"
                 });
 
             if (!resp || !resp.ok) {
@@ -324,6 +324,11 @@ document
             const sites =
                 (resp.report &&
                     resp.report.sites) ||
+                [];
+
+            const sessions =
+                (resp.report &&
+                    resp.report.sessions) ||
                 [];
 
             const totalTimeMs =
@@ -343,6 +348,9 @@ document
                     totalSites:
                         sites.length,
 
+                    totalSessions:
+                        sessions.length,
+
                     totalTimeMs,
 
                     totalTimeHours:
@@ -358,6 +366,28 @@ document
                         msToHours(
                             s.duration_ms
                         )
+                })),
+
+                sessions: sessions.map(s => ({
+                    id: s.id,
+                    site: s.site,
+                    start: new Date(
+                        s.start_time
+                    ).toISOString(),
+                    end: new Date(
+                        s.end_time
+                    ).toISOString(),
+                    startTime: s.start_time,
+                    endTime: s.end_time,
+                    durationMs: s.duration_ms,
+                    durationHours:
+                        msToHours(
+                            s.duration_ms
+                        ),
+                    source: s.source,
+                    recordedAt: new Date(
+                        s.created_at
+                    ).toISOString()
                 }))
             };
 

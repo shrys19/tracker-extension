@@ -167,30 +167,43 @@ function sendSessionToDaemon(
     });
 }
 
-// Popup asks for a durable report straight from SQLite (full history,
-// survives the local-cache "Reset"). Routed through the worker because
-// it owns the native-messaging connection.
+// Popup asks the daemon for durable SQLite data (survives the
+// local-cache "Reset"). Routed through the worker because it owns the
+// native-messaging connection.
+//   getReport — lightweight per-site totals, for the frequent list refresh
+//   getExport — full dump incl. every raw session, for the export button
+const DAEMON_REQUEST_FOR = {
+    getReport: "report",
+    getExport: "export"
+};
+
 chrome.runtime.onMessage.addListener(
     (msg, sender, sendResponse) => {
-        if (msg && msg.type === "getReport") {
-            sendToDaemon({ type: "report" })
-                .then(report =>
-                    sendResponse({
-                        ok: true,
-                        report
-                    })
-                )
-                .catch(e =>
-                    sendResponse({
-                        ok: false,
-                        error: String(
-                            (e && e.message) || e
-                        )
-                    })
-                );
+        const daemonType =
+            msg &&
+            DAEMON_REQUEST_FOR[msg.type];
 
-            return true; // async sendResponse
+        if (!daemonType) {
+            return;
         }
+
+        sendToDaemon({ type: daemonType })
+            .then(report =>
+                sendResponse({
+                    ok: true,
+                    report
+                })
+            )
+            .catch(e =>
+                sendResponse({
+                    ok: false,
+                    error: String(
+                        (e && e.message) || e
+                    )
+                })
+            );
+
+        return true; // async sendResponse
     }
 );
 

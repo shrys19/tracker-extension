@@ -176,15 +176,32 @@ pub struct SiteSummary {
 }
 
 #[derive(Serialize)]
+pub struct SessionRow {
+    pub id: i64,
+    pub site: String,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub duration_ms: i64,
+    pub source: String,
+    pub created_at: i64,
+}
+
+#[derive(Serialize)]
 pub struct ReportResponse {
     pub status: String,
     pub sites: Vec<SiteSummary>,
 }
 
-pub fn generate_report(
+#[derive(Serialize)]
+pub struct ExportResponse {
+    pub status: String,
+    pub sites: Vec<SiteSummary>,
+    pub sessions: Vec<SessionRow>,
+}
+
+fn query_site_summaries(
     conn: &Connection,
-) -> anyhow::Result<ReportResponse>
-{
+) -> anyhow::Result<Vec<SiteSummary>> {
     let mut stmt =
         conn.prepare(
             "
@@ -219,11 +236,90 @@ pub fn generate_report(
         sites.push(row?);
     }
 
+    Ok(sites)
+}
+
+// Lightweight: per-site totals only. Used by the popup list, which
+// refreshes frequently, so it must not haul every raw row over the wire.
+pub fn generate_report(
+    conn: &Connection,
+) -> anyhow::Result<ReportResponse>
+{
     Ok(
         ReportResponse {
             status:
                 "ok".into(),
+            sites:
+                query_site_summaries(
+                    conn,
+                )?,
+        }
+    )
+}
+
+// Full dump: per-site totals plus every raw session row. Used only by
+// the export button (on demand), not the periodic list refresh.
+pub fn generate_export(
+    conn: &Connection,
+) -> anyhow::Result<ExportResponse>
+{
+    let sites =
+        query_site_summaries(conn)?;
+
+    let mut stmt =
+        conn.prepare(
+            "
+            SELECT
+                id,
+                site,
+                start_time,
+                end_time,
+                duration_ms,
+                source,
+                created_at
+            FROM sessions
+            ORDER BY start_time
+            "
+        )?;
+
+    let session_rows =
+        stmt.query_map(
+            [],
+            |row| {
+                Ok(
+                    SessionRow {
+                        id:
+                            row.get(0)?,
+                        site:
+                            row.get(1)?,
+                        start_time:
+                            row.get(2)?,
+                        end_time:
+                            row.get(3)?,
+                        duration_ms:
+                            row.get(4)?,
+                        source:
+                            row.get(5)?,
+                        created_at:
+                            row.get(6)?,
+                    }
+                )
+            },
+        )?;
+
+    let mut sessions =
+        Vec::new();
+
+    for row in session_rows {
+        sessions.push(row?);
+    }
+
+    Ok(
+        ExportResponse {
+            status:
+                "ok".into(),
             sites,
+            sessions,
         }
     )
 }
